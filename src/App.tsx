@@ -1,14 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, X } from 'lucide-react';
 import { scenario, RELIABILITY_BASELINE } from './data/scenario';
 import { recommend, scoreRun } from './lib/engine';
 import { detectTransport, type PayPalTransport } from './lib/transports';
 import type { DecisionRecord, LogEntry, OperatorAction } from './types';
+import { Button } from './components/arc/button/button';
+import SegmentedControl from './components/arc/segmented-control/segmented-control';
+import { Badge } from './components/arc/badge/badge';
+import { AnimatedCounter } from './components/arc/animated-counter/animated-counter';
+import { Progress } from './components/arc/progress/progress';
+import { Input } from './components/arc/input/input';
+import { Gauge } from './components/arc/gauge/gauge';
+import { MetricCard } from './components/arc/metric-card/metric-card';
+import { Timeline, type TimelineEvent } from './components/arc/timeline/timeline';
 
 type Mode = 'glass' | 'black';
 
 function now(): string {
   return new Date().toLocaleTimeString('en-US', { hour12: false });
 }
+
+const CONFIDENCE_BANDS = [
+  { from: 0, tone: 'danger', label: 'Low confidence' },
+  { from: 50, tone: 'warning', label: 'Contested' },
+  { from: 75, tone: 'accent', label: 'High confidence' },
+] as const;
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('glass');
@@ -17,6 +33,8 @@ export default function App() {
   const [log, setLog] = useState<LogEntry[]>([
     { t: now(), kind: 'system', text: 'Session started. Scenario: POISONED CHECKOUT (5 proposals, synthetic data).' },
   ]);
+  const stamps = useRef<number[]>([Date.now()]);
+  const [tick, setTick] = useState(() => Date.now());
   const [transport, setTransport] = useState<PayPalTransport | null>(null);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState('');
@@ -31,8 +49,14 @@ export default function App() {
   );
 
   useEffect(() => {
+    const id = window.setInterval(() => setTick(Date.now()), 15000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
     void detectTransport().then((t) => {
       setTransport(t);
+      stamps.current.push(Date.now());
       setLog((l) => [
         ...l,
         {
@@ -50,6 +74,7 @@ export default function App() {
   useEffect(() => {
     shownAt.current = performance.now();
     if (dp && rec) {
+      stamps.current.push(Date.now());
       setLog((l) => [
         ...l,
         {
@@ -97,6 +122,8 @@ export default function App() {
       executionNote,
     };
     setRecords((r) => [...r, record]);
+    stamps.current.push(Date.now());
+    if (executionNote) stamps.current.push(Date.now());
     setLog((l) => [
       ...l,
       {
@@ -117,195 +144,329 @@ export default function App() {
     setIdx(0);
     setRecords([]);
     setReason('');
+    stamps.current = [Date.now()];
     setLog([{ t: now(), kind: 'system', text: 'Session reset.' }]);
   }
 
+  const events: TimelineEvent[] = log.map((e, i) => ({
+    id: `log-${i}`,
+    at: stamps.current[i] ?? stamps.current[stamps.current.length - 1] ?? Date.now(),
+    title: e.text,
+    tone: e.kind === 'execution' ? 'success' : 'neutral',
+  }));
+
+  const liveBadge = transport ? (
+    transport.mode === 'live' ? (
+      <Badge tone="success" dot pill>
+        PAYPAL SANDBOX: LIVE
+      </Badge>
+    ) : (
+      <Badge tone="warning" dot pill>
+        TRANSPORT: MOCK (no credentials)
+      </Badge>
+    )
+  ) : (
+    <Badge tone="neutral" pill>
+      Transport: …
+    </Badge>
+  );
+
   return (
     <div className="app">
-      <header>
-        <div>
-          <h1>Glass-Box Checkout</h1>
-          <p className="sub">
-            Appropriate-reliance measurement for AI payment agents — PayPal Sandbox · Newton &amp; Carter LLC
-          </p>
-        </div>
-        <div className="controls">
-          <div className="toggle" role="group" aria-label="Display mode">
-            <button className={mode === 'glass' ? 'on' : ''} onClick={() => setMode('glass')}>
-              Glass-Box
-            </button>
-            <button className={mode === 'black' ? 'on' : ''} onClick={() => setMode('black')}>
-              Black-Box
-            </button>
+      <div className="masthead">
+        <div className="masthead-inner">
+          <div className="wordmark">
+            <span className="wordmark-name">Glass-Box Checkout</span>
+            <span className="wordmark-sub">
+              Appropriate-reliance measurement for AI payment agents. PayPal Sandbox · Newton &amp; Carter LLC
+            </span>
           </div>
-          <span className={`badge ${transport?.mode ?? 'mock'}`}>
-            {transport
-              ? transport.mode === 'live'
-                ? 'PAYPAL SANDBOX: LIVE'
-                : 'TRANSPORT: MOCK (no credentials)'
-              : 'TRANSPORT: …'}
-          </span>
-          <button onClick={reset}>Reset run</button>
+          <div className="masthead-controls">
+            <SegmentedControl
+              label="Display mode"
+              options={[
+                { value: 'glass', label: 'Glass-Box' },
+                { value: 'black', label: 'Black-Box' },
+              ]}
+              value={mode}
+              onValueChange={(v) => setMode(v as Mode)}
+            />
+            {liveBadge}
+            <Button variant="secondary" size="sm" onClick={reset}>
+              Reset run
+            </Button>
+          </div>
         </div>
-      </header>
+      </div>
 
-      <div className="layout">
-        <aside className="rail">
-          <h2>POISONED CHECKOUT</h2>
-          <p className="railnote">
-            Five agent-proposed payments. The recommender is right 80% of the time — the question is whether you can
+      <div className="scenario-strip">
+        <div>
+          <h1>POISONED CHECKOUT</h1>
+          <p className="scenario-note">
+            Five agent-proposed payments. The recommender is right 80% of the time. The question is whether you can
             tell which time it isn’t.
           </p>
-          <ol>
-            {scenario.map((p, i) => {
-              const r = records.find((x) => x.dpId === p.id);
-              return (
-                <li key={p.id} className={i === idx ? 'current' : r ? 'done' : ''}>
-                  <span>{p.id}</span> {p.title}
-                  {r ? <em>{r.correct ? ' ✓' : ' ✗'}</em> : null}
-                </li>
-              );
-            })}
-          </ol>
+        </div>
+        <div className="run-progress">
+          <span className="run-progress-label">
+            {done ? 'Run complete' : `Decision ${Math.min(idx + 1, scenario.length)} of ${scenario.length}`}
+          </span>
+          <Progress value={records.length} max={scenario.length} label="Decisions completed" />
+        </div>
+      </div>
+
+      <div className="console">
+        <aside className="rail">
+          <section className="rail-block">
+            <h2>Run queue</h2>
+            <ol className="queue">
+              {scenario.map((p, i) => {
+                const r = records.find((x) => x.dpId === p.id);
+                const state = r ? 'done' : i === idx ? 'current' : 'waiting';
+                return (
+                  <li key={p.id} className={`queue-row ${state}`}>
+                    <span className="queue-status" aria-hidden="true">
+                      {r ? (
+                        r.correct ? (
+                          <Check size={13} strokeWidth={2.5} />
+                        ) : (
+                          <X size={13} strokeWidth={2.5} />
+                        )
+                      ) : (
+                        <span className="queue-num">{i + 1}</span>
+                      )}
+                    </span>
+                    <span className="queue-text">
+                      <span className="queue-id">{p.id}</span>
+                      <span className="queue-title">{p.title}</span>
+                    </span>
+                    {state === 'current' && (
+                      <Badge tone="info" size="sm">
+                        Reviewing
+                      </Badge>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+
+          <section className="rail-block">
+            <h2>The agent</h2>
+            <div className="agent-stat">
+              <span className="agent-stat-num">
+                <AnimatedCounter value={Math.round(RELIABILITY_BASELINE * 100)} suffix="%" />
+              </span>
+              <span className="agent-stat-label">Measured reliability across ground-truthed runs</span>
+            </div>
+            <p className="rail-note">
+              A deterministic rules engine. Its arithmetic is the exhibit: every driver is printed next to the call it
+              produced, and every decision is written to the forensic log.
+            </p>
+          </section>
         </aside>
 
-        <main>
+        <main className="stage">
           {!done && dp && rec ? (
-            <section className="card">
-              <h2>
-                {dp.id} — {dp.title}
-              </h2>
-              <p>{dp.brief}</p>
+            <section className="stage-card">
+              <div className="stage-head">
+                <h2>
+                  {dp.id} — {dp.title}
+                </h2>
+                <p className="brief">{dp.brief}</p>
+              </div>
 
-              <div className="proposal">
+              <dl className="ledger">
                 <div>
-                  <strong>Payee</strong>
-                  <span>{dp.proposal.payeeName}</span>
+                  <dt>Payee</dt>
+                  <dd>{dp.proposal.payeeName}</dd>
                 </div>
                 <div>
-                  <strong>Item</strong>
-                  <span>
+                  <dt>Item</dt>
+                  <dd>
                     {dp.proposal.item} × {dp.proposal.quantity}
-                  </span>
+                  </dd>
                 </div>
-                <div>
-                  <strong>Total</strong>
-                  <span>${dp.proposal.total.toFixed(2)} USD</span>
+                <div className="ledger-total">
+                  <dt>Total</dt>
+                  <dd>${dp.proposal.total.toFixed(2)} USD</dd>
+                </div>
+              </dl>
+
+              <div className="verdict">
+                <div className="verdict-main">
+                  <span className="verdict-label">Agent recommends</span>
+                  <span className={`verdict-action ${rec.action}`}>{rec.action}</span>
+                  <p className="verdict-note">
+                    {mode === 'glass'
+                      ? 'Every driver behind this call is on the record below.'
+                      : 'A bare recommendation and a confidence number. Nothing else is shown.'}
+                  </p>
+                </div>
+                <div className="verdict-gauge">
+                  <Gauge
+                    value={rec.confidence}
+                    label="Agent confidence"
+                    detail="of 100"
+                    thresholds={[...CONFIDENCE_BANDS]}
+                  />
                 </div>
               </div>
 
-              <div className="recommendation">
-                <div className="rec-head">
-                  <span className={`rec-action ${rec.action}`}>AGENT RECOMMENDS: {rec.action}</span>
-                  <span className="conf">{rec.confidence}% confidence</span>
-                </div>
-                {mode === 'glass' ? (
-                  <>
-                    <table className="drivers">
-                      <tbody>
-                        {rec.drivers.map((d) => (
-                          <tr key={d.label}>
-                            <td>{d.label}</td>
-                            <td className={d.points > 0 ? 'pos' : d.points < 0 ? 'neg' : ''}>
-                              {d.points > 0 ? `+${d.points}` : d.points}
-                            </td>
-                            <td className="note">{d.note}</td>
-                          </tr>
+              {mode === 'glass' ? (
+                <div className="evidence">
+                  {dp.contradictions.length > 0 && (
+                    <div className="alert-panel">
+                      <strong>Contradictions on record</strong>
+                      <ul>
+                        {dp.contradictions.map((c) => (
+                          <li key={c}>{c}</li>
                         ))}
-                      </tbody>
-                    </table>
-                    <p className="rule">{rec.ruleNote}</p>
+                      </ul>
+                    </div>
+                  )}
 
-                    {dp.contradictions.length > 0 && (
-                      <div className="contradictions">
-                        <strong>Contradictions on record</strong>
-                        <ul>
-                          {dp.contradictions.map((c) => (
-                            <li key={c}>{c}</li>
+                  <div className="evidence-grid">
+                    <div>
+                      <h3>Why this call</h3>
+                      <table className="drivers">
+                        <tbody>
+                          {rec.drivers.map((d) => (
+                            <tr key={d.label}>
+                              <td className="d-label">{d.label}</td>
+                              <td className="d-points">
+                                <Badge tone={d.points > 0 ? 'success' : d.points < 0 ? 'danger' : 'neutral'} size="sm">
+                                  {d.points > 0 ? `+${d.points}` : d.points}
+                                </Badge>
+                              </td>
+                              <td className="note">{d.note}</td>
+                            </tr>
                           ))}
-                        </ul>
-                      </div>
-                    )}
+                        </tbody>
+                      </table>
+                      <p className="rule-note">{rec.ruleNote}</p>
+                    </div>
 
-                    <div className="provenance">
-                      <strong>Provenance</strong>
-                      {dp.provenance.map((p) => (
-                        <div key={p.label} className="prov-row">
-                          <span className="prov-label">{p.label}</span>
-                          <span>
-                            {p.source} · {p.ageMinutes >= 60 ? `${(p.ageMinutes / 60).toFixed(1)}h old` : `${p.ageMinutes}m old`}
-                            {p.flags.map((f) => (
-                              <span key={f} className="flag">
-                                ⚠ {f}
-                              </span>
-                            ))}
+                    <div>
+                      <h3>Provenance</h3>
+                      <div className="prov-list">
+                        {dp.provenance.map((p) => (
+                          <div key={p.label} className="prov-row">
+                            <span className="prov-label">{p.label}</span>
+                            <span className="prov-value">
+                              {p.source} ·{' '}
+                              {p.ageMinutes >= 60
+                                ? `${(p.ageMinutes / 60).toFixed(1)}h old`
+                                : `${p.ageMinutes}m old`}
+                              {p.flags.map((f) => (
+                                <span key={f} className="flag-text">
+                                  {f}
+                                </span>
+                              ))}
+                            </span>
+                          </div>
+                        ))}
+                        <div className="prov-row">
+                          <span className="prov-label">Payee of record</span>
+                          <span className="prov-value">
+                            Verified storefront name: “{dp.proposal.payeeVerifiedName}”
+                            {dp.proposal.payeeVerifiedName !== dp.proposal.payeeName && (
+                              <Badge tone="danger" size="sm" className="flag">
+                                Instruction names “{dp.proposal.payeeName}” — MISMATCH
+                              </Badge>
+                            )}
                           </span>
                         </div>
-                      ))}
-                      <div className="prov-row">
-                        <span className="prov-label">Payee of record</span>
-                        <span>
-                          Verified storefront name: “{dp.proposal.payeeVerifiedName}”
-                          {dp.proposal.payeeVerifiedName !== dp.proposal.payeeName && (
-                            <span className="flag">⚠ Instruction names “{dp.proposal.payeeName}” — MISMATCH</span>
-                          )}
-                        </span>
                       </div>
                     </div>
-                  </>
-                ) : (
-                  <p className="blacknote">
-                    Black-Box mode: recommendation and confidence number only — the industry default. No drivers, no
-                    provenance, no contradiction flags.
+                  </div>
+                </div>
+              ) : (
+                <div className="withheld">
+                  <strong>Evidence withheld</strong>
+                  <p>
+                    Black-Box mode shows the recommendation and the confidence number only, the industry default. No
+                    drivers, no provenance, no contradiction flags.
                   </p>
-                )}
-              </div>
+                </div>
+              )}
 
               <div className="actions">
-                <button className="accept" disabled={busy} onClick={() => void act('ACCEPT')}>
-                  Accept recommendation
-                </button>
-                <input
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  placeholder="Override reason (recorded in the forensic log)"
-                />
-                <button className="override" disabled={busy} onClick={() => void act('OVERRIDE')}>
+                <span className="btn-navy">
+                  <Button variant="primary" size="lg" disabled={busy} onClick={() => void act('ACCEPT')}>
+                    Accept recommendation
+                  </Button>
+                </span>
+                <div className="reason-field">
+                  <Input
+                    label="Override reason"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    placeholder="Override reason (recorded in the forensic log)"
+                  />
+                </div>
+                <Button variant="secondary" size="lg" disabled={busy} onClick={() => void act('OVERRIDE')}>
                   Override
-                </button>
+                </Button>
               </div>
             </section>
           ) : debrief ? (
-            <section className="card debrief">
-              <h2>Debrief — scored against ground truth</h2>
-              <div className="metrics">
-                <div>
-                  <span className="big">{(debrief.appropriateReliance * 100).toFixed(0)}%</span>
-                  <label>Appropriate-reliance rate (headline)</label>
-                </div>
-                <div>
-                  <span className="big">{(debrief.overReliance * 100).toFixed(0)}%</span>
-                  <label>Over-reliance (accepted wrong recommendations)</label>
-                </div>
-                <div>
-                  <span className="big">{(debrief.underReliance * 100).toFixed(0)}%</span>
-                  <label>Under-reliance (overrode right recommendations)</label>
-                </div>
-                <div>
-                  <span className="big">
-                    {(debrief.relianceShare * 100).toFixed(0)}% vs {(RELIABILITY_BASELINE * 100).toFixed(0)}%
-                  </span>
-                  <label>Your reliance vs the agent’s actual reliability</label>
-                </div>
-                <div>
-                  <span className="big">{debrief.errorRecovery ? 'CAUGHT' : 'MISSED'}</span>
-                  <label>The DP-3 diversion trap</label>
-                </div>
-                <div>
-                  <span className="big">{(debrief.avgLatencyMs / 1000).toFixed(1)}s</span>
-                  <label>Average decision latency</label>
-                </div>
+            <section className="stage-card debrief">
+              <div className="stage-head">
+                <h2>Debrief — scored against ground truth</h2>
+                <p className="brief">
+                  Transport this run:{' '}
+                  {transport?.mode === 'live'
+                    ? 'PayPal Sandbox (live orders).'
+                    : 'MOCK. Executions were simulated and are labeled as such in the log; no PayPal orders exist.'}
+                </p>
               </div>
+
+              <div className={`trap-verdict ${debrief.errorRecovery ? 'caught' : 'missed'}`}>
+                <strong>The DP-3 diversion trap: {debrief.errorRecovery ? 'CAUGHT' : 'MISSED'}</strong>
+                <span>
+                  {debrief.errorRecovery
+                    ? 'The operator read the provenance, saw the payee mismatch, and stopped the diverted payment.'
+                    : 'The diverted payment went through. The catch was only available on the Glass-Box surface.'}
+                </span>
+              </div>
+
+              <div className="metrics-grid">
+                <MetricCard
+                  label="Appropriate reliance"
+                  value={Math.round(debrief.appropriateReliance * 100)}
+                  suffix="%"
+                  context="Right calls accepted, wrong calls overridden. The headline score."
+                />
+                <MetricCard
+                  label="Over-reliance"
+                  value={Math.round(debrief.overReliance * 100)}
+                  suffix="%"
+                  context="Wrong recommendations the operator accepted."
+                />
+                <MetricCard
+                  label="Under-reliance"
+                  value={Math.round(debrief.underReliance * 100)}
+                  suffix="%"
+                  context="Right recommendations the operator overrode."
+                />
+                <MetricCard
+                  label="Reliance share"
+                  value={Math.round(debrief.relianceShare * 100)}
+                  suffix="%"
+                  context={`Recommendations accepted. The agent was actually right ${Math.round(
+                    debrief.systemReliability * 100,
+                  )}% of the time.`}
+                />
+                <MetricCard
+                  label="Average decision latency"
+                  value={Math.round(debrief.avgLatencyMs / 1000)}
+                  suffix="s"
+                  context="Time from the recommendation appearing to the decision."
+                />
+              </div>
+
+              <h3>Ground truth, point by point</h3>
               <table className="truth">
                 <thead>
                   <tr>
@@ -333,26 +494,26 @@ export default function App() {
                   })}
                 </tbody>
               </table>
-              <p className="rule">
-                Transport this run: {transport?.mode === 'live' ? 'PayPal Sandbox (live orders)' : 'MOCK — executions were simulated and are labeled as such in the log; no PayPal orders exist.'}
-              </p>
             </section>
           ) : null}
-
-          <section className="card log">
-            <h2>Forensic log</h2>
-            <ul>
-              {log.map((e, i) => (
-                <li key={i} className={e.kind}>
-                  <span className="lt">{e.t}</span> {e.text}
-                </li>
-              ))}
-            </ul>
-          </section>
         </main>
+
+        <aside className="rail">
+          <section className="rail-block log-block">
+            <h2>Forensic log</h2>
+            <Timeline
+              events={events}
+              now={tick}
+              label="Forensic log"
+              timeZone={Intl.DateTimeFormat().resolvedOptions().timeZone}
+              maxHeight={520}
+              scrollToNew={false}
+            />
+          </section>
+        </aside>
       </div>
 
-      <footer>
+      <footer className="foot">
         Synthetic scenario data; no real payment is proposed or executed outside the PayPal Sandbox. The recommender
         is a deterministic rules engine — its arithmetic is the exhibit. Prototype by Newton &amp; Carter LLC; no prior
         PayPal work is claimed.
