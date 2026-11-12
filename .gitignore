@@ -3,3 +3,5 @@ dist
 dist-ssr
 .env
 *.local
+video-out/
+SUBMISSION-STATE-*.md
